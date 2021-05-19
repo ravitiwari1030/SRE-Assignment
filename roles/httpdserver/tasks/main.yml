@@ -1,0 +1,12 @@
+---
+# tasks file for httpdserver
+
+- name: install httpd
+  package:
+        name: httpd
+        state: present
+
+- name: start httpd
+  service:
+          name: httpd
+          state: started

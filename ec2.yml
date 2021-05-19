@@ -1,0 +1,231 @@
+- hosts: localhost
+  gather_facts: no
+  vars_files:
+  - cred.yml
+  tasks:
+  - name: Install pip
+    apt:
+      name: pip
+      state: present
+  - name: Install boto lib
+    pip:
+      name: boto
+      state: present
+  - name: Install boto core lib
+    pip:
+      name: botocore
+      state: present
+  - name: Install boto3 lib
+    pip:
+      name: botocore
+      state: present
+  - name: Creating Security Group for WebServer on AWS
+    ec2_group:
+      name: RaviTSecurityGroup
+      description: Security Group for Web Server allowing port for http and ssh
+      region: us-west-2
+      aws_access_key: "{{ access_key }}"
+      aws_secret_key: "{{ secret_key }}"
+      rules:
+      - proto: tcp
+        from_port: 22
+        to_port: 22
+        cidr_ip: 0.0.0.0/0
+      - proto: tcp
+        from_port: 80
+        to_port: 80
+        cidr_ip: 0.0.0.0/0
+      - proto: tcp
+        from_port: 3306
+        to_port: 3306
+        cidr_ip: 0.0.0.0/0
+      rules_egress:
+      - proto: all
+        cidr_ip: 0.0.0.0/0
+
+  - name: launching ec2 instance for webserver
+    ec2:
+      key_name: ravi-tiwari-key-pair
+      instance_type: t2.micro
+      image: ami-0cf6f5c8a62fa5da6
+      wait: true
+      group: RaviTSecurityGroup
+      count: 1
+      vpc_subnet_id: subnet-81618ae6
+      assign_public_ip: yes
+      region: us-west-2
+      state: present
+      aws_access_key: "{{ access_key }}"
+      aws_secret_key: "{{ secret_key }}"
+      instance_tags:
+        Name: webserver
+    register: ec2
+
+  - name: Add new instance to host group
+    add_host:
+      hostname: "{{ item.public_ip }}"
+      groupname: webserver
+    loop: "{{ ec2.instances }}"
+
+  - name: Wait for SSH to come up
+    wait_for:
+      host: "{{ item.public_dns_name }}"
+      port: 22
+      state: started
+    loop: "{{ ec2.instances }}"
+
+- hosts: webserver
+  gather_facts: no
+  tasks:
+  - name: running role
+    include_role:
+      name: httpdserver
+
+- hosts: webserver
+  user: "ec2-user"
+  become: yes
+  become_user: "root"
+  gather_facts: yes
+  tasks:
+    - debug:
+        var: inventory_hostname
+    - debug:
+        var: ansible_ssh_host
+
+    - name: Update all packages
+      yum:
+        name: '*'
+        state: latest
+        update_only: yes
+
+    - name: Ensure a list of yum packages are installed
+      yum:
+        name: "{{ packages }}"
+        state: latest
+        update_cache: yes
+      vars:
+        packages:
+        - python-pip
+        - yum-utils
+        - device-mapper-persistent-data
+        - lvm2
+        - amazon-linux-extras
+        - php-mysql
+
+    - name: Add extras repository
+      shell: yum-config-manager --enable extras
+
+    - name: Enable packages from amazon-linux-extras packages
+      shell: "amazon-linux-extras enable python3.8 ansible2 docker"
+
+    - name: Enable packages from amazon-linux-extras packages
+      shell: "amazon-linux-extras install -y php7.3"
+
+    - name: clean yum metadata cache
+      command: yum clean metadata
+      args:
+        warn: false
+
+    - name: Ensure a list of yum packages are installed
+      yum:
+        name: "{{ packages }}"
+        state: latest
+        update_cache: yes
+      vars:
+        packages:
+        - python3.8
+        - ansible
+        - docker
+
+    - name: Enable Docker CE service at startup
+      service:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Upgrade pip3
+      shell: "python3.8 -m pip install pip --upgrade"
+
+    - name: Ensure Python pip packages are installed
+      pip:
+        name: "{{ packages }}"
+        executable: /usr/local/bin/pip3.8
+      vars:
+        packages:
+        - boto
+        - boto3
+        - docker-compose
+
+    - name: Install Docker Module for Python
+      pip:
+        name: docker
+            
+    - name: Launch mysql database container
+      docker_container:
+        name: db
+        image: mysql:5.7
+        volumes:
+          - "db_data:/var/lib/mysql"
+        restart: true
+        env:
+          MYSQL_ROOT_PASSWORD: password
+          MYSQL_DATABASE: wordpress
+          MYSQL_USER: wordpress
+          MYSQL_PASSWORD: wordpress
+        ports:
+          - "3306:3306"
+
+    - name: Downloading wordpress.
+      get_url: url=http://www.wordpress.org/latest.tar.gz  dest=/tmp/wordpress.tar
+
+    - name: Extracting wordpress contents.
+      unarchive: src=/tmp/wordpress.tar dest=/tmp/  remote_src=yes
+
+    - name: Copying wordpress contents.
+      shell: "cp -r /tmp/wordpress/*  /var/www/html/"
+
+
+    - name: Copying wp-config.php file.
+      copy: src=/var/www/html/wp-config-sample.php  dest=/var/www/html/wp-config.php remote_src=yes
+
+    - name: Removing Wordpress.tar
+      file: path=/tmp/wordpress.tar state=absent
+
+    - name: Removing Wodpress Extracted Directory.
+      file: path=/tmp/wordpress state=absent
+
+    - name: Changing Doc-root permission.
+      shell: 'chown -R ec2-user:ec2-user /var/www/html/'
+      args:
+       warn: false 
+
+    - name: Update WordPress config file
+      replace:
+        path: "/var/www/html/wp-config.php"
+        regexp: "{{ item.regexp }}"
+        replace: "{{ item.line }}"
+      with_items:
+       - {regexp: 'database_name_here' , line: 'wordpress'}
+       - {regexp: 'username_here' , line: 'wordpress'}
+       - {regexp: 'password_here' , line: 'wordpress'}
+
+    - name: Update WordPress config file
+      replace:
+        path: "/var/www/html/wp-config.php"
+        regexp: 'localhost'
+        replace: "{{ ansible_ssh_host }}"
+
+    - name: Copy file with owner and permissions
+      copy:
+        src: /opt/ansible-ec2/files/weather.php
+        dest: /var/www/html/weather.php
+        owner: ec2-user
+        group: ec2-user
+        mode: '0644'
+
+    - name: start service
+      systemd:
+        name: httpd
+        state: restarted
+        force: yes
+
