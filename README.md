@@ -16,6 +16,7 @@ ansible-vault create cred.yml
 
 
 access_key: <your aws access key>
+  
 secret_key: <your aws secret key>
 
 ansible.cfg file contains path to roles and private key for SSH. Change the path according to your file system.
